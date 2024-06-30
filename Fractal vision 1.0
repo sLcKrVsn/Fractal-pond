@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.3/dist/tailwind.min.css" rel="stylesheet">
+    <title>Visualizer</title>
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        .ui-wrapper {
+            position: fixed;
+            top: 1rem;
+            left: 1rem;
+            z-index: 10;
+        }
+        
+        canvas {
+            filter: sepia(80%);
+        }
+    </style>
+</head>
+<body class="bg-black flex justify-center items-center">
+    <canvas id="canvas"></canvas>
+    <div class="ui-wrapper">
+        <select id="shapeSelector" class="bg-black text-white p-2 rounded mr-2">
+            <option value="circle">Circle</option>
+            <option value="square">Square</option>
+            <option value="triangle">Triangle</option>
+            <option value="star">Star</option>
+            <option value="metamorph">Metamorph</option>
+        </select>
+        <select id="parameterSelector" class="bg-black text-white p-2 rounded">
+            <option value="fractalLevels">Fractal Levels</option>
+            <option value="volumeSensitivity">Volume Sensitivity</option>
+        </select>
+        <input type="range" min="1" max="10" class="slider bg-black w-48" id="parameterValue">
+        <label class="text-white"><input type="checkbox" id="orbitToggle"/> Orbit</label>
+        <input type="file" id="audioFile" accept="audio/*, .wav, .m4a" class="text-white p-1 rounded">
+        <button id="playButton" class="bg-blue-500 text-white p-2 rounded ml-2">Play</button>
+    </div>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            let audioContext;
+            let analyser;
+            let source;
+            let audioElement;
+            let volume = 0;
+            let lastVolume = 0;
+            let globalRotation = 0;
+            let initialTouchX;
+            let fractalLevelsBase = 4;
+            let volumeSensitivity = 2;
+            let selectedShape = 'circle';
+            let saturationShift = 0;
+            let saturationDirection = 1;
+            let orbitEnabled = false;
+            let metamorphTime = 0;
+            let gradientLevel = 1;
+            let oscillationAmplitude = 0.1; // Control amplitude of fractal position oscillations
+            let oscillationSpeed = 2; // Control speed of fractal position oscillations
+
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            }
+
+            window.addEventListener('resize', resizeCanvas, false);
+            resizeCanvas();
+
+            document.getElementById('shapeSelector').addEventListener('change', function () {
+                selectedShape = this.value;
+            });
+
+            document.getElementById('orbitToggle').addEventListener('change', function () {
+                orbitEnabled = this.checked;
+            });
+
+            async function setupAudioContextFromMicrophone() {
+                if (!navigator.mediaDevices.getUserMedia) {
+                    alert('Your browser does not support user media');
+                    return;
+                }
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                setupAudioContext(stream);
+            }
+
+            function setupAudioContext(stream) {
+                if (!audioContext) {
+                    audioContext = new AudioContext();
+                }
+                source = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 2048;
+                source.connect(analyser);
+            }
+
+            document.getElementById('audioFile').addEventListener('change', function() {
+                const files = this.files;
+                if (files.length === 0) return;
+                const file = files[0];
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    if (audioContext) audioContext.close();
+                    audioContext = new AudioContext();
+                    audioElement = new Audio(e.target.result);
+                    const src = audioContext.createMediaElementSource(audioElement);
+                    analyser = audioContext.createAnalyser();
+                    src.connect(analyser);
+                    analyser.connect(audioContext.destination);
+                    analyser.fftSize = 2048;
+                };
+                reader.readAsDataURL(file);
+            });
+
+            document.getElementById('playButton').addEventListener('click', () => {
+                if (audioElement) {
+                    if (audioElement.paused) {
+                        audioElement.play();
+                        document.getElementById('playButton').textContent = 'Pause';
+                    } else {
+                        audioElement.pause();
+                        document.getElementById('playButton').textContent = 'Play';
+                    }
+                }    
+            });
+
+            canvas.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                initialTouchX = e.touches[0].clientX;
+            });
+
+            canvas.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                const touchX = e.touches[0].clientX;
+                const delta = touchX - initialTouchX;
+                gradientLevel += delta / 500;
+                gradientLevel = Math.max(0.1, Math.min(gradientLevel, 2));
+                initialTouchX = touchX;
+            });
+
+            const parameterSelector = document.getElementById('parameterSelector');
+            const parameterValue = document.getElementById('parameterValue');
+            parameterSelector.addEventListener('change', () => {
+                parameterValue.value = parameterSelector.value === 'fractalLevels' ? fractalLevelsBase : volumeSensitivity;
+            });
+
+            parameterValue.addEventListener('input', () => {
+                if (parameterSelector.value === 'fractalLevels') {
+                    fractalLevelsBase = parseInt(parameterValue.value);
+                } else if (parameterSelector.value === 'volumeSensitivity') {
+                    volumeSensitivity = parseInt(parameterValue.value);
+                }
+            });
+
+            function createGradient(x0, y0, r0, x1, y1, r1, colors) {
+                let gradient = ctx.createRadialGradient(x0, y0, r0, x1, y1, r1);
+                colors.forEach(color => {
+                    gradient.addColorStop(color.offset, color.color);
+                });
+                return gradient;
+            }
+
+            function drawShape(x, y, radius) {
+                ctx.beginPath();
+                switch (selectedShape) {
+                    case 'square':
+                        ctx.rect(-radius, -radius, radius * 2, radius * 2);
+                        break;
+                    case 'triangle':
+                        ctx.moveTo(0, -radius);
+                        ctx.lineTo(radius, radius);
+                        ctx.lineTo(-radius, radius);
+                        ctx.closePath();
+                        break;
+                    case 'star':
+                        drawStar(ctx, 0, 0, 5, radius, radius / 2);
+                        break;
+                    case 'metamorph':
+                        const shapeIndex = Math.floor((metamorphTime + volume) / 100) % 3;
+                        if (shapeIndex === 0) {
+                            ctx.arc(0, 0, radius, 0, Math.PI * 2);
+                        } else if (shapeIndex === 1) {
+                            ctx.rect(-radius, -radius, radius * 2, radius * 2);
+                        } else {
+                            ctx.moveTo(0, -radius);
+                            ctx.lineTo(radius, radius);
+                            ctx.lineTo(-radius, radius);
+                            ctx.closePath();
+                        }
+                        break;
+                    case 'circle':
+                    default:
+                        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+                        break;
+                }
+            }
+
+            function drawStar(ctx, cx, cy, spikes, outerRadius, innerRadius) {
+                let rot = Math.PI / 2 * 3;
+                let x = cx;
+                let y = cy;
+                let step = Math.PI / spikes;
+
+                ctx.beginPath();
+                ctx.moveTo(cx, cy - outerRadius);
+                for (let i = 0; i < spikes; i++) {
+                    x = cx + Math.cos(rot) * outerRadius;
+                    y = cy + Math.sin(rot) * outerRadius;
+                    ctx.lineTo(x, y);
+                    rot += step;
+
+                    x = cx + Math.cos(rot) * innerRadius;
+                    y = cy + Math.sin(rot) * innerRadius;
+                    ctx.lineTo(x, y);
+                    rot += step;
+                }
+                ctx.lineTo(cx, cy - outerRadius);
+                ctx.closePath();
+            }
+
+            function drawFractal(x, y, radius, levels, rotation) {
+                if (levels < 1) return;
+                
+                // Apply oscillation to fractal positions
+                const oscillation = Math.sin(new Date().getTime() * 0.001 * oscillationSpeed + levels) * radius * oscillationAmplitude;
+                
+                ctx.save();
+                ctx.translate(x + oscillation, y + oscillation); // Use oscillation
+                ctx.rotate(globalRotation);
+                
+                if (orbitEnabled) {
+                    ctx.rotate(rotation * levels * 0.1);
+                }
+
+                drawShape(x, y, radius);
+                const currentSaturation = 50 + Math.sin(saturationShift) * 50;
+                const gradient = createGradient(0, 0, radius * 0.5 * gradientLevel, 0, 0, radius * gradientLevel, [
+                    {offset: 0, color: `hsla(${(radius + volume * 10 + levels * 20) % 360}, ${currentSaturation}%, 50%, 0.5)`},
+                    {offset: 1, color: `hsla(${(radius + volume * 10) % 360}, ${currentSaturation}%, 50%, 0)`}
+                ]);
+                ctx.fillStyle = gradient;
+                ctx.fill();
+                ctx.restore();
+
+                const newLevels = levels - 1;
+                const newRadius = radius * (0.5 + volume * 0.005);
+                drawFractal(x + radius * 2, y, newRadius, newLevels, globalRotation);
+                drawFractal(x - radius * 2, y, newRadius, newLevels, -globalRotation);
+                drawFractal(x, y + radius * 2, newRadius, newLevels, globalRotation);
+                drawFractal(x, y - radius * 2, newRadius, newLevels, -globalRotation);
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                const centerX = canvas.width / 2;
+                const centerY = canvas.height / 2;
+                const time = new Date().getTime() * 0.0002 + globalRotation;
+                saturationShift += 0.05 * saturationDirection; 
+                if (saturationShift > Math.PI || saturationShift < 0) {
+                  saturationDirection *= -1; 
+                }
+                const interpolatedVolume = lastVolume + (volume - lastVolume) * 0.1;
+                const size = (Math.sin(time) * 100 + interpolatedVolume * volumeSensitivity) + 5000;
+                const fractalLevels = Math.min(Math.floor(interpolatedVolume / 100) + fractalLevelsBase, 8);
+
+                ctx.save();
+                ctx.translate(centerX, centerY);
+                ctx.rotate(globalRotation); 
+                
+                for (let i = 0; i < 20; i++) {
+                    ctx.rotate(Math.PI / 10);
+                    ctx.beginPath();
+                    drawShape(0, size, size * 0.5);
+                    const currentSaturation = 50 + Math.sin(saturationShift) * 50; 
+                    const gradient = createGradient(0, 0, size * 0.25 * gradientLevel, 0, 0, size * 0.5 * gradientLevel, [
+                        {offset: 0, color: `hsla(${(time * 100 + interpolatedVolume * 10) % 360}, ${currentSaturation}%, 50%, 0.7)`},
+                        {offset: 1, color: `transparent`}
+                    ]);
+                    ctx.fillStyle = gradient;
+                    ctx.fill();
+                }
+                ctx.restore();
+                drawFractal(centerX, centerY, 50, fractalLevels, 0);
+                metamorphTime += volume / 50; 
+                lastVolume = interpolatedVolume;
+            }
+
+            function analyzeSound() {
+                if (!analyser) return;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                analyser.getByteFrequencyData(dataArray);
+                const sum = dataArray.reduce((a, value) => a + value, 0);
+                const average = sum / bufferLength;
+                volume = average;
+            }
+
+            function animate() {
+                requestAnimationFrame(animate);
+                draw();
+                analyzeSound();
+            }
+
+            animate();
+            setupAudioContextFromMicrophone().catch(console.error);
+        });
+    </script>
+</body>
+</html>
